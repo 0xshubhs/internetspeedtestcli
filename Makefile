@@ -10,7 +10,7 @@ build:
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/$(BINARY) $(PKG)
 
 install:
-	CGO_ENABLED=0 go install -trimpath -ldflags "$(LDFLAGS)" $(PKG)
+	./install.sh --source
 
 test:
 	go vet ./...
@@ -23,7 +23,7 @@ dist:
 		[ "$$os" = "windows" ] && ext=".exe"; \
 		echo "building $$os/$$arch"; \
 		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "$(LDFLAGS)" \
-			-o dist/$(BINARY)-$(VERSION)-$$os-$$arch$$ext $(PKG) || exit 1; \
+			-o dist/$(BINARY)-$$os-$$arch$$ext $(PKG) || exit 1; \
 	done
 
 clean:

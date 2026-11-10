@@ -47,34 +47,42 @@ While a test runs, each phase shows a live spinner, current speed, a progress ba
 
 ## Install
 
-With Go 1.26 or newer:
-
 ```sh
-go install github.com/0xshubhs/internetspeedtestcli/cmd/netspeed@latest
+curl -fsSL https://raw.githubusercontent.com/0xshubhs/internetspeedtestcli/main/install.sh | sh
 ```
 
-Or download a prebuilt binary for Linux, macOS or Windows (amd64 and arm64) from the [releases page](https://github.com/0xshubhs/internetspeedtestcli/releases).
+The script picks the prebuilt binary for your OS and CPU (Linux, macOS, or Windows under Git Bash; amd64 or arm64) from the latest release, verifies its SHA-256 checksum and installs it to `~/.local/bin`, or `/usr/local/bin` when run as root. If no prebuilt binary is available, it builds from source with Go. It also tells you when the install directory is not on your `PATH`.
 
-Or build from source:
+Pass options after `sh -s --`:
 
 ```sh
-git clone https://github.com/0xshubhs/internetspeedtestcli
-cd internetspeedtestcli
-make build        # produces ./bin/netspeed
+curl -fsSL https://raw.githubusercontent.com/0xshubhs/internetspeedtestcli/main/install.sh | sh -s -- --version v0.1.0
+curl -fsSL https://raw.githubusercontent.com/0xshubhs/internetspeedtestcli/main/install.sh | sh -s -- --dir /usr/local/bin
+curl -fsSL https://raw.githubusercontent.com/0xshubhs/internetspeedtestcli/main/install.sh | sh -s -- --uninstall
 ```
+
+From a clone of this repo:
+
+| Command | What it does |
+| --- | --- |
+| `./install.sh` | Installs the prebuilt binary, or builds from source when there is none |
+| `./install.sh --source` | Always builds this checkout (same as `make install`) |
+| `./install.sh --help` | Lists all options |
+
+With Go 1.26 or newer you can also run `go install github.com/0xshubhs/internetspeedtestcli/cmd/netspeed@latest`.
 
 ## Usage
 
-```sh
-netspeed                                  # full test, about 25 seconds
-netspeed -d 20s -c 16                     # longer test with more streams (fast links)
-netspeed --no-upload                      # skip a phase
-netspeed --json > result.json             # full machine-readable report
-netspeed --csv --csv-header >> log.csv    # one row per run, good for cron
-netspeed --simple                         # short plain-text summary
-netspeed --bytes                          # MB/s instead of Mbps
-netspeed -4                               # IPv4 only (-6 for IPv6)
-```
+| Command | What it does |
+| --- | --- |
+| `netspeed` | Full test, about 25 seconds |
+| `netspeed -d 20s -c 16` | Longer test with more streams, for fast links |
+| `netspeed --no-upload` | Skips a phase |
+| `netspeed --json > result.json` | Saves the full machine-readable report |
+| `netspeed --csv --csv-header >> log.csv` | Appends one row per run, good for cron |
+| `netspeed --simple` | Short plain-text summary |
+| `netspeed --bytes` | Shows MB/s instead of Mbps |
+| `netspeed -4` | IPv4 only (`-6` for IPv6) |
 
 ### Flags
 
@@ -111,11 +119,15 @@ Each probe carries a random token, so replies from other traffic are never count
 
 Test against your own VPS, home server or LAN box to separate ISP problems from Wi-Fi or local problems:
 
-```sh
-# on the server
-netspeed serve --listen :8080
+On the server:
 
-# on the client
+```sh
+netspeed serve --listen :8080
+```
+
+On the client:
+
+```sh
 netspeed --server http://your-server:8080
 ```
 
@@ -151,11 +163,12 @@ The server implements the same `/__down?bytes=N` and `/__up` endpoints as Cloudf
 
 ## Development
 
-```sh
-make test      # go vet plus tests with the race detector
-make build     # ./bin/netspeed
-make dist      # cross-compiled binaries in ./dist
-```
+| Command | What it does |
+| --- | --- |
+| `make test` | Runs `go vet` and the tests with the race detector |
+| `make build` | Builds `./bin/netspeed` |
+| `make install` | Builds this checkout and installs it with `install.sh` |
+| `make dist` | Cross-compiles the release binaries into `./dist` |
 
 ## License
 
