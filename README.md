@@ -51,23 +51,27 @@ While a test runs, each phase shows a live spinner, current speed, a progress ba
 curl -fsSL https://raw.githubusercontent.com/0xshubhs/internetspeedtestcli/main/install.sh | sh
 ```
 
-The script picks the prebuilt binary for your OS and CPU (Linux, macOS, or Windows under Git Bash; amd64 or arm64) from the latest release, verifies its SHA-256 checksum and installs it to `~/.local/bin`, or `/usr/local/bin` when run as root. If no prebuilt binary is available, it builds from source with Go. It also tells you when the install directory is not on your `PATH`.
+What the script does:
 
-Pass options after `sh -s --`:
+1. Clones this repo into a temporary folder, or downloads the source archive when `git` is not installed.
+2. Uses your Go if it is 1.26 or newer. Otherwise it downloads the current Go release from go.dev into the same temporary folder and checks it against the official SHA-256 checksum. Nothing is installed system-wide.
+3. Compiles `netspeed` and installs it to `~/.local/bin`, or `/usr/local/bin` when run as root.
+4. Deletes the clone, the temporary Go and its caches, then tells you if the install directory is not on your `PATH`.
+
+It needs `git` (or `curl`/`wget`) and `tar`. It targets Linux and macOS, and Windows under Git Bash.
+
+Options go after `sh -s --`, for example:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/0xshubhs/internetspeedtestcli/main/install.sh | sh -s -- --version v0.1.0
 curl -fsSL https://raw.githubusercontent.com/0xshubhs/internetspeedtestcli/main/install.sh | sh -s -- --dir /usr/local/bin
-curl -fsSL https://raw.githubusercontent.com/0xshubhs/internetspeedtestcli/main/install.sh | sh -s -- --uninstall
 ```
 
-From a clone of this repo:
-
-| Command | What it does |
+| Option | What it does |
 | --- | --- |
-| `./install.sh` | Installs the prebuilt binary, or builds from source when there is none |
-| `./install.sh --source` | Always builds this checkout (same as `make install`) |
-| `./install.sh --help` | Lists all options |
+| `--version v0.1.0` | Builds a specific tag or branch instead of `main` |
+| `--dir DIR` | Installs to another directory |
+| `--uninstall` | Removes netspeed |
+| `--local` | Builds the checkout the script sits in, when run as `./install.sh` from a clone (this is what `make install` does) |
 
 With Go 1.26 or newer you can also run `go install github.com/0xshubhs/internetspeedtestcli/cmd/netspeed@latest`.
 

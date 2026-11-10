@@ -3,14 +3,16 @@ set -eu
 
 REPO="0xshubhs/internetspeedtestcli"
 MODULE="github.com/$REPO"
+REPO_URL="${NETSPEED_REPO_URL:-https://github.com/$REPO.git}"
 BIN="netspeed"
-BASE_URL="${NETSPEED_BASE_URL:-https://github.com/$REPO/releases}"
-VERSION="${NETSPEED_VERSION:-latest}"
+REF="${NETSPEED_VERSION:-}"
 INSTALL_DIR="${NETSPEED_INSTALL_DIR:-}"
-FROM_SOURCE=0
+LOCAL=0
 UNINSTALL=0
 TMP=""
-BUILT=""
+SRC=""
+GO=""
+TEMP_GO=0
 SCRIPT_DIR=""
 
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
@@ -37,24 +39,27 @@ usage() {
 Install netspeed, the terminal internet speed test.
 
 Usage:
-  ./install.sh [options]
   curl -fsSL https://raw.githubusercontent.com/$REPO/main/install.sh | sh
   curl -fsSL https://raw.githubusercontent.com/$REPO/main/install.sh | sh -s -- [options]
+  ./install.sh [options]
 
-Downloads the prebuilt binary for this OS and CPU from GitHub Releases,
-verifies its SHA-256 checksum and installs it. If no prebuilt binary is
-available, it builds from source with Go instead.
+Clones $REPO into a temporary folder, compiles netspeed and installs
+the binary. If Go 1.26 or newer is not installed, a verified copy of Go is
+downloaded into the same temporary folder. Everything temporary (the clone,
+the downloaded Go and its caches) is deleted afterwards.
 
 Options:
   -d, --dir DIR       install directory (default: ~/.local/bin, or /usr/local/bin as root)
-  -v, --version TAG   release to install, for example v0.1.0 (default: latest)
-  -s, --source        build from source with Go instead of downloading
+  -v, --version REF   tag or branch to build, for example v0.1.0 (default: main)
+  -l, --local         build the checkout this script is in instead of cloning
   -u, --uninstall     remove netspeed from the install directory
   -h, --help          show this help
 
 Environment:
   NETSPEED_INSTALL_DIR, NETSPEED_VERSION   same as --dir and --version
-  NETSPEED_BASE_URL                        release download base URL, for mirrors
+  NETSPEED_REPO_URL                        clone from another URL, for mirrors
+
+Needs git (or curl/wget) and tar. Go is optional.
 EOF
 }
 
@@ -78,15 +83,15 @@ parse_args() {
 			;;
 		-v | --version)
 			need_arg "$@"
-			VERSION=$2
+			REF=$2
 			shift 2
 			;;
 		--version=*)
-			VERSION=${1#*=}
+			REF=${1#*=}
 			shift
 			;;
-		-s | --source)
-			FROM_SOURCE=1
+		-l | --local)
+			LOCAL=1
 			shift
 			;;
 		-u | --uninstall)
@@ -103,11 +108,6 @@ parse_args() {
 		esac
 	done
 
-	case "$VERSION" in
-	latest | v*) ;;
-	*) VERSION="v$VERSION" ;;
-	esac
-
 	if [ -z "$INSTALL_DIR" ]; then
 		if [ "$(id -u)" = 0 ]; then
 			INSTALL_DIR=/usr/local/bin
@@ -118,26 +118,23 @@ parse_args() {
 }
 
 detect_platform() {
-	PREBUILT=1
 	os=$(uname -s)
 	case "$os" in
 	Linux) OS=linux ;;
 	Darwin) OS=darwin ;;
+	FreeBSD) OS=freebsd ;;
 	MINGW* | MSYS* | CYGWIN*) OS=windows ;;
-	*)
-		OS=$os
-		PREBUILT=0
-		;;
+	*) OS=$(printf '%s' "$os" | tr '[:upper:]' '[:lower:]') ;;
 	esac
 
 	machine=$(uname -m)
 	case "$machine" in
 	x86_64 | amd64) ARCH=amd64 ;;
 	aarch64 | arm64 | armv8*) ARCH=arm64 ;;
-	*)
-		ARCH=$machine
-		PREBUILT=0
-		;;
+	i386 | i486 | i586 | i686 | x86) ARCH=386 ;;
+	armv6* | armv7*) ARCH=armv6l ;;
+	loongarch64) ARCH=loong64 ;;
+	*) ARCH=$machine ;;
 	esac
 
 	if [ "$OS" = darwin ] && [ "$ARCH" = amd64 ]; then
@@ -150,7 +147,6 @@ detect_platform() {
 	if [ "$OS" = windows ]; then
 		EXT=".exe"
 	fi
-	ASSET="$BIN-$OS-$ARCH$EXT"
 	TARGET="$INSTALL_DIR/$BIN$EXT"
 }
 
@@ -160,7 +156,7 @@ fetch() {
 	elif has wget; then
 		wget -q -T 30 -O "$2" "$1"
 	else
-		return 2
+		die "neither curl nor wget is installed"
 	fi
 }
 
@@ -176,94 +172,144 @@ sha256() {
 	fi
 }
 
-verify() {
-	expected=$(awk -v f="$ASSET" '$2 == f || $2 == "*" f { print $1; exit }' "$2")
-	if [ -z "$expected" ]; then
-		warn "$ASSET is not listed in SHA256SUMS, skipping the checksum check"
-		return 0
+cleanup() {
+	if [ -n "$TMP" ] && [ -d "$TMP" ]; then
+		chmod -R u+w "$TMP" 2>/dev/null || true
+		rm -rf "$TMP"
 	fi
-	if ! actual=$(sha256 "$1"); then
-		warn "no SHA-256 tool found, skipping the checksum check"
-		return 0
-	fi
-	if [ "$expected" != "$actual" ]; then
-		die "checksum mismatch for $ASSET (expected $expected, got $actual)"
-	fi
-	say "    checksum verified"
 }
 
-download_release() {
-	if [ "$PREBUILT" != 1 ]; then
-		warn "no prebuilt binary for $OS/$ARCH"
-		return 1
-	fi
-	if [ "$VERSION" = latest ]; then
-		url="$BASE_URL/latest/download"
-	else
-		url="$BASE_URL/download/$VERSION"
-	fi
-
-	step "Downloading $ASSET ($VERSION)"
-	if fetch "$url/$ASSET" "$TMP/$ASSET" 2>/dev/null; then
-		if fetch "$url/SHA256SUMS" "$TMP/SHA256SUMS" 2>/dev/null; then
-			verify "$TMP/$ASSET" "$TMP/SHA256SUMS"
-		else
-			warn "this release has no SHA256SUMS, skipping the checksum check"
+get_source() {
+	if [ "$LOCAL" = 1 ]; then
+		if [ -z "$SCRIPT_DIR" ] || ! grep -qs "^module $MODULE\$" "$SCRIPT_DIR/go.mod"; then
+			die "--local only works when running install.sh from a clone of $REPO"
 		fi
-		BUILT="$TMP/$ASSET"
+		SRC=$SCRIPT_DIR
+		BUILD_VERSION=$(git -C "$SRC" describe --tags --always --dirty 2>/dev/null || echo dev)
+		step "Using local checkout $SRC"
 		return 0
 	fi
 
-	if has gh && gh auth status >/dev/null 2>&1; then
-		say "    direct download failed, trying the GitHub CLI"
-		tag=""
-		if [ "$VERSION" != latest ]; then
-			tag=$VERSION
+	SRC="$TMP/src"
+	label=${REF:-main}
+	if has git; then
+		step "Cloning $REPO ($label)"
+		if [ -n "$REF" ]; then
+			GIT_TERMINAL_PROMPT=0 git clone --quiet --depth 1 --branch "$REF" "$REPO_URL" "$SRC" ||
+				die "could not clone $REPO_URL at $REF (check that the tag or branch exists)"
+		else
+			GIT_TERMINAL_PROMPT=0 git clone --quiet --depth 1 "$REPO_URL" "$SRC" ||
+				die "could not clone $REPO_URL"
 		fi
-		if gh release download $tag -R "$REPO" -p "$ASSET" -D "$TMP" --clobber >/dev/null 2>&1; then
-			if gh release download $tag -R "$REPO" -p SHA256SUMS -D "$TMP" --clobber >/dev/null 2>&1; then
-				verify "$TMP/$ASSET" "$TMP/SHA256SUMS"
-			else
-				warn "this release has no SHA256SUMS, skipping the checksum check"
-			fi
-			BUILT="$TMP/$ASSET"
+		BUILD_VERSION=$(git -C "$SRC" describe --tags --always 2>/dev/null || echo "$label")
+		return 0
+	fi
+
+	step "Downloading $REPO source ($label)"
+	mkdir -p "$SRC"
+	fetch "https://github.com/$REPO/archive/${REF:-HEAD}.tar.gz" "$TMP/src.tar.gz" ||
+		die "could not download the source archive for $label"
+	tar -xzf "$TMP/src.tar.gz" -C "$SRC" --strip-components=1 || die "could not unpack the source archive"
+	BUILD_VERSION=$label
+}
+
+version_ge() {
+	have=$(printf '%s' "$1" | sed 's/^[^0-9]*//')
+	want=$2
+	for i in 1 2 3; do
+		h=$(printf '%s' "$have" | cut -d. -f"$i" | sed 's/[^0-9].*$//')
+		w=$(printf '%s' "$want" | cut -d. -f"$i" | sed 's/[^0-9].*$//')
+		h=${h:-0}
+		w=${w:-0}
+		if [ "$h" -gt "$w" ]; then
 			return 0
 		fi
-	fi
-	return 1
+		if [ "$h" -lt "$w" ]; then
+			return 1
+		fi
+	done
+	return 0
 }
 
-build_source() {
-	if ! has go; then
-		die "no prebuilt binary could be downloaded and Go is not installed. Install Go 1.26 or newer from https://go.dev/dl/ and run this again."
+ensure_go() {
+	need=$(sed -n 's/^go \([0-9][0-9.]*\).*$/\1/p' "$SRC/go.mod" | head -n 1)
+	need=${need:-1.26}
+
+	if has go; then
+		have=$(go env GOVERSION 2>/dev/null || true)
+		if [ -n "$have" ] && version_ge "$have" "$need"; then
+			GO=$(command -v go)
+			step "Using Go ${have#go} from $GO"
+			return 0
+		fi
+		say "    found ${have:-an old Go}, but netspeed needs Go $need or newer"
 	fi
 
-	src=""
-	if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/go.mod" ] && grep -q "^module $MODULE\$" "$SCRIPT_DIR/go.mod"; then
-		src=$SCRIPT_DIR
+	latest=$(fetch "https://go.dev/VERSION?m=text" /dev/stdout 2>/dev/null | head -n 1) || true
+	case "$latest" in
+	go[0-9]*) ;;
+	*) die "could not look up the current Go release on go.dev" ;;
+	esac
+
+	archive="tar.gz"
+	if [ "$OS" = windows ]; then
+		archive="zip"
+		has unzip || die "unzip is needed to unpack Go on Windows"
+	fi
+	file="$latest.$OS-$ARCH.$archive"
+
+	fetch "https://go.dev/dl/?mode=json" "$TMP/go-releases.json" || die "could not download the Go release index"
+	sum=$(awk -v f="\"$file\"" '
+		index($0, "\"filename\": " f) { found = 1 }
+		found && /"sha256":/ { gsub(/[",]/, "", $2); print $2; exit }
+	' "$TMP/go-releases.json")
+	if [ -z "$sum" ]; then
+		die "Go has no download for $OS/$ARCH ($file); install Go $need or newer yourself and run this again"
 	fi
 
-	if [ -n "$src" ] && [ "$VERSION" = latest ]; then
-		ver=$(git -C "$src" describe --tags --always --dirty 2>/dev/null || echo dev)
-		step "Building $BIN $ver from $src"
-		BUILT="$TMP/$BIN$EXT"
-		(cd "$src" && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$ver" -o "$BUILT" ./cmd/netspeed) ||
-			die "build failed"
+	step "Downloading $latest for $OS/$ARCH into a temporary folder (about 70 MB, deleted afterwards)"
+	fetch "https://go.dev/dl/$file" "$TMP/$file" || die "could not download $file"
+	actual=$(sha256 "$TMP/$file") || die "no SHA-256 tool (sha256sum, shasum or openssl) to verify the Go download"
+	if [ "$actual" != "$sum" ]; then
+		die "checksum mismatch for $file (expected $sum, got $actual)"
+	fi
+	say "    checksum verified"
+
+	if [ "$archive" = zip ]; then
+		unzip -q "$TMP/$file" -d "$TMP"
 	else
-		step "Building $BIN from $MODULE@$VERSION"
-		GOBIN="$TMP/gobin" CGO_ENABLED=0 go install -trimpath "$MODULE/cmd/netspeed@$VERSION" ||
-			die "go install failed"
-		BUILT="$TMP/gobin/$BIN$EXT"
+		tar -xzf "$TMP/$file" -C "$TMP"
+	fi
+	rm -f "$TMP/$file" "$TMP/go-releases.json"
+	GO="$TMP/go/bin/go$EXT"
+	TEMP_GO=1
+}
+
+build() {
+	step "Building $BIN $BUILD_VERSION"
+	mkdir -p "$TMP/out"
+	BUILT="$TMP/out/$BIN$EXT"
+	if [ "$TEMP_GO" = 1 ]; then
+		(
+			cd "$SRC"
+			export GOPATH="$TMP/gopath" GOMODCACHE="$TMP/gopath/pkg/mod" GOCACHE="$TMP/gocache"
+			export GOTOOLCHAIN=local GOFLAGS=-modcacherw GOTELEMETRY=off CGO_ENABLED=0
+			"$GO" build -trimpath -ldflags "-s -w -X main.version=$BUILD_VERSION" -o "$BUILT" ./cmd/netspeed
+		) || die "build failed"
+	else
+		(
+			cd "$SRC"
+			CGO_ENABLED=0 "$GO" build -trimpath -ldflags "-s -w -X main.version=$BUILD_VERSION" -o "$BUILT" ./cmd/netspeed
+		) || die "build failed"
 	fi
 }
 
 place() {
-	chmod 755 "$1"
 	if mkdir -p "$INSTALL_DIR" 2>/dev/null && [ -w "$INSTALL_DIR" ]; then
 		INSTALL_DIR=$(cd "$INSTALL_DIR" && pwd)
 		TARGET="$INSTALL_DIR/$BIN$EXT"
 		step "Installing to $TARGET"
-		cp "$1" "$TARGET.new.$$"
+		cp "$BUILT" "$TARGET.new.$$"
 		chmod 755 "$TARGET.new.$$"
 		mv -f "$TARGET.new.$$" "$TARGET"
 		return 0
@@ -271,7 +317,7 @@ place() {
 	if [ "$(id -u)" != 0 ] && has sudo; then
 		step "Installing to $TARGET (needs sudo)"
 		sudo mkdir -p "$INSTALL_DIR"
-		sudo cp "$1" "$TARGET.new.$$"
+		sudo cp "$BUILT" "$TARGET.new.$$"
 		sudo chmod 755 "$TARGET.new.$$"
 		sudo mv -f "$TARGET.new.$$" "$TARGET"
 		return 0
@@ -341,18 +387,25 @@ main() {
 		exit 0
 	fi
 
-	TMP=$(mktemp -d 2>/dev/null || mktemp -d -t netspeed)
-	trap 'rm -rf "$TMP"' EXIT
-	trap 'exit 130' INT TERM
-
-	if [ "$FROM_SOURCE" = 1 ]; then
-		build_source
-	elif ! download_release; then
-		warn "no prebuilt binary found for $VERSION, building from source instead"
-		build_source
+	has tar || die "tar is not installed"
+	if [ "$LOCAL" != 1 ] && ! has git && ! has curl && ! has wget; then
+		die "install git, curl or wget first"
 	fi
 
-	place "$BUILT"
+	TMP=$(mktemp -d 2>/dev/null || mktemp -d -t netspeed)
+	trap cleanup EXIT
+	trap 'exit 130' INT TERM
+
+	get_source
+	ensure_go
+	build
+	place
+	cleanup
+	if [ "$TEMP_GO" = 1 ]; then
+		step "Removed the build files and the temporary Go"
+	else
+		step "Removed the build files"
+	fi
 	report
 }
 
