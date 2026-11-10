@@ -34,6 +34,14 @@ die() {
 }
 has() { command -v "$1" >/dev/null 2>&1; }
 
+git_usable() {
+	has git || return 1
+	if [ "$(uname -s)" = Darwin ] && ! xcode-select -p >/dev/null 2>&1; then
+		return 1
+	fi
+	return 0
+}
+
 usage() {
 	cat <<EOF
 Install netspeed, the terminal internet speed test.
@@ -192,7 +200,7 @@ get_source() {
 
 	SRC="$TMP/src"
 	label=${REF:-main}
-	if has git; then
+	if git_usable; then
 		step "Cloning $REPO ($label)"
 		if [ -n "$REF" ]; then
 			GIT_TERMINAL_PROMPT=0 git clone --quiet --depth 1 --branch "$REF" "$REPO_URL" "$SRC" ||
@@ -388,7 +396,7 @@ main() {
 	fi
 
 	has tar || die "tar is not installed"
-	if [ "$LOCAL" != 1 ] && ! has git && ! has curl && ! has wget; then
+	if [ "$LOCAL" != 1 ] && ! git_usable && ! has curl && ! has wget; then
 		die "install git, curl or wget first"
 	fi
 
